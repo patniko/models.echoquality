@@ -13,7 +13,8 @@ dependencies = [
     "tqdm",
     "opencv-python",
     "pydicom",
-    "torchvision"
+    "torchvision",
+    "mlflow (>=2.22.0,<3.0.0)"
 ]
 package-mode = false
 

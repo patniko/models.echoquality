@@ -5,7 +5,15 @@ import numpy as np
 from tqdm import tqdm
 import cv2
 import pydicom
+import mlflow
 from torchvision.models.video import r2plus1d_18
+
+# Flag to enable/disable MLflow tracking
+USE_MLFLOW = True  # Set to False to disable MLflow tracking
+
+# Set up MLflow tracking if enabled
+if USE_MLFLOW:
+    mlflow.set_tracking_uri("http://127.0.0.1:5000")
 
 
 device = torch.device("cpu")
@@ -205,37 +213,129 @@ def get_quality_issues(probability):
         return "Critical issues - may include artifacts, improper view, or technical errors"
 
 if __name__ == "__main__":
-    stack_of_videos = process_dicoms(data_path)
-    video_classification_model.eval()
-    
-    # Get the filenames for reference
-    dicom_paths = glob.glob(f'{data_path}/**/*.dcm', recursive=True)
-    filenames = [path.split('/')[-1] for path in dicom_paths]
-    
-    logits = video_classification_model(stack_of_videos)
-    probabilities = torch.sigmoid(logits)
-    predictions = (probabilities >= 0.3).float()
-    
-    print("\nQuality Assessment Results:")
-    print("=" * 80)
-    print(f"{'Filename':<60} {'Score':<10} {'Pass/Fail':<10} {'Assessment'}")
-    print("-" * 80)
-    
-    for i, (filename, prob, pred) in enumerate(zip(filenames, probabilities, predictions)):
-        prob_value = prob.item()
-        status = "PASS" if pred.item() > 0 else "FAIL"
-        assessment = get_quality_issues(prob_value)
+    # Process with or without MLflow based on the flag
+    if USE_MLFLOW:
+        # Start an MLflow run for tracking
+        with mlflow.start_run(run_name="EchoPrime_QC_Assessment") as run:
+            # Log parameters
+            mlflow.log_params({
+                "data_path": data_path,
+                "model_weights": model_weights,
+                "frames_to_take": frames_to_take,
+                "frame_stride": frame_stride,
+                "video_size": video_size,
+                "quality_threshold": 0.3  # The threshold used for pass/fail
+            })
+            
+            stack_of_videos = process_dicoms(data_path)
+            video_classification_model.eval()
+            
+            # Get the filenames for reference
+            dicom_paths = glob.glob(f'{data_path}/**/*.dcm', recursive=True)
+            filenames = [path.split('/')[-1] for path in dicom_paths]
+            
+            logits = video_classification_model(stack_of_videos)
+            probabilities = torch.sigmoid(logits)
+            predictions = (probabilities >= 0.3).float()
+            
+            print("\nQuality Assessment Results:")
+            print("=" * 80)
+            print(f"{'Filename':<60} {'Score':<10} {'Pass/Fail':<10} {'Assessment'}")
+            print("-" * 80)
+            
+            # Create a dictionary to store individual file results for MLflow
+            file_results = {}
+            
+            for i, (filename, prob, pred) in enumerate(zip(filenames, probabilities, predictions)):
+                prob_value = prob.item()
+                status = "PASS" if pred.item() > 0 else "FAIL"
+                assessment = get_quality_issues(prob_value)
+                
+                # Store results for MLflow
+                file_results[f"file_{i}_name"] = filename
+                file_results[f"file_{i}_score"] = prob_value
+                file_results[f"file_{i}_status"] = status
+                file_results[f"file_{i}_assessment"] = assessment
+                
+                # Log individual file metrics
+                mlflow.log_metric(f"score_{filename}", prob_value)
+                mlflow.log_metric(f"pass_{filename}", 1 if status == "PASS" else 0)
+                
+                # Truncate filename if too long
+                short_filename = filename[:57] + "..." if len(filename) > 60 else filename.ljust(60)
+                
+                print(f"{short_filename} {prob_value:.4f}    {status:<10} {assessment}")
+            
+            # Summary statistics
+            pass_count = predictions.sum().item()
+            total_count = len(predictions)
+            pass_rate = pass_count/total_count*100
+            
+            print(f"\nSummary: {pass_count}/{total_count} videos passed quality check ({pass_rate:.1f}%)")
+            
+            # Log summary metrics
+            mlflow.log_metrics({
+                "total_files": total_count,
+                "pass_count": pass_count,
+                "pass_rate": pass_rate,
+                "average_quality_score": probabilities.mean().item()
+            })
+            
+            # Log the detailed results as a JSON artifact
+            import json
+            with open("quality_results.json", "w") as f:
+                json.dump(file_results, f, indent=2)
+            mlflow.log_artifact("quality_results.json")
+            
+            print(f"\nResults logged to MLflow run: {run.info.run_id}")
+            print(f"View at: {mlflow.get_tracking_uri()}/#/experiments/0/runs/{run.info.run_id}")
+    else:
+        # Run without MLflow tracking
+        stack_of_videos = process_dicoms(data_path)
+        video_classification_model.eval()
         
-        # Truncate filename if too long
-        short_filename = filename[:57] + "..." if len(filename) > 60 else filename.ljust(60)
+        # Get the filenames for reference
+        dicom_paths = glob.glob(f'{data_path}/**/*.dcm', recursive=True)
+        filenames = [path.split('/')[-1] for path in dicom_paths]
         
-        print(f"{short_filename} {prob_value:.4f}    {status:<10} {assessment}")
-    
-    # Also print the original tensor for reference
-    #print("\nOriginal prediction tensor:")
-    #print(predictions)
-    
-    # Summary statistics
-    pass_count = predictions.sum().item()
-    total_count = len(predictions)
-    print(f"\nSummary: {pass_count}/{total_count} videos passed quality check ({pass_count/total_count*100:.1f}%)")
+        logits = video_classification_model(stack_of_videos)
+        probabilities = torch.sigmoid(logits)
+        predictions = (probabilities >= 0.3).float()
+        
+        print("\nQuality Assessment Results:")
+        print("=" * 80)
+        print(f"{'Filename':<60} {'Score':<10} {'Pass/Fail':<10} {'Assessment'}")
+        print("-" * 80)
+        
+        for i, (filename, prob, pred) in enumerate(zip(filenames, probabilities, predictions)):
+            prob_value = prob.item()
+            status = "PASS" if pred.item() > 0 else "FAIL"
+            assessment = get_quality_issues(prob_value)
+            
+            # Truncate filename if too long
+            short_filename = filename[:57] + "..." if len(filename) > 60 else filename.ljust(60)
+            
+            print(f"{short_filename} {prob_value:.4f}    {status:<10} {assessment}")
+        
+        # Summary statistics
+        pass_count = predictions.sum().item()
+        total_count = len(predictions)
+        pass_rate = pass_count/total_count*100
+        
+        print(f"\nSummary: {pass_count}/{total_count} videos passed quality check ({pass_rate:.1f}%)")
+        
+        # Save results to JSON without MLflow
+        import json
+        file_results = {}
+        for i, (filename, prob, pred) in enumerate(zip(filenames, probabilities, predictions)):
+            prob_value = prob.item()
+            status = "PASS" if pred.item() > 0 else "FAIL"
+            assessment = get_quality_issues(prob_value)
+            file_results[f"file_{i}_name"] = filename
+            file_results[f"file_{i}_score"] = prob_value
+            file_results[f"file_{i}_status"] = status
+            file_results[f"file_{i}_assessment"] = assessment
+        
+        with open("quality_results.json", "w") as f:
+            json.dump(file_results, f, indent=2)
+        print("\nResults saved to quality_results.json")
