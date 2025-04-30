@@ -181,10 +181,61 @@ def process_dicoms(INPUT):
     stack_of_videos = torch.stack(stack_of_videos)
     return stack_of_videos
 
+def get_quality_issues(probability):
+    """
+    Provides a basic assessment of potential quality issues based on probability score.
+    
+    Args:
+        probability (float): The quality probability score from the model.
+        
+    Returns:
+        str: Description of potential quality issues.
+    """
+    if probability >= 0.8:
+        return "Excellent quality"
+    elif probability >= 0.6:
+        return "Good quality"
+    elif probability >= 0.3:
+        return "Acceptable quality, but may have minor issues"
+    elif probability >= 0.2:
+        return "Poor quality - likely issues with clarity, contrast, or positioning"
+    elif probability >= 0.1:
+        return "Very poor quality - significant issues with image acquisition"
+    else:
+        return "Critical issues - may include artifacts, improper view, or technical errors"
+
 if __name__ == "__main__":
     stack_of_videos = process_dicoms(data_path)
     video_classification_model.eval()
+    
+    # Get the filenames for reference
+    dicom_paths = glob.glob(f'{data_path}/**/*.dcm', recursive=True)
+    filenames = [path.split('/')[-1] for path in dicom_paths]
+    
     logits = video_classification_model(stack_of_videos)
     probabilities = torch.sigmoid(logits)
     predictions = (probabilities >= 0.3).float()
-    print(predictions)
+    
+    print("\nQuality Assessment Results:")
+    print("=" * 80)
+    print(f"{'Filename':<60} {'Score':<10} {'Pass/Fail':<10} {'Assessment'}")
+    print("-" * 80)
+    
+    for i, (filename, prob, pred) in enumerate(zip(filenames, probabilities, predictions)):
+        prob_value = prob.item()
+        status = "PASS" if pred.item() > 0 else "FAIL"
+        assessment = get_quality_issues(prob_value)
+        
+        # Truncate filename if too long
+        short_filename = filename[:57] + "..." if len(filename) > 60 else filename.ljust(60)
+        
+        print(f"{short_filename} {prob_value:.4f}    {status:<10} {assessment}")
+    
+    # Also print the original tensor for reference
+    #print("\nOriginal prediction tensor:")
+    #print(predictions)
+    
+    # Summary statistics
+    pass_count = predictions.sum().item()
+    total_count = len(predictions)
+    print(f"\nSummary: {pass_count}/{total_count} videos passed quality check ({pass_count/total_count*100:.1f}%)")
