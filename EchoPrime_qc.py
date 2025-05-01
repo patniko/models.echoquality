@@ -83,9 +83,26 @@ def mask_outside_ultrasound(original_pixels: np.array, dicom_filename=None) -> n
         test_array=np.copy(original_pixels)
         vid=np.copy(original_pixels)
         
-        # Save original frames if enabled
+        # Save truly original frames without any color conversion
         if SAVE_MASK_IMAGES and dicom_filename:
-            # Save first, middle, and last frames of original video
+            # Save first, middle, and last frames of original video without any processing
+            frames_to_save = [0, len(original_pixels)//2, -1]
+            for i, frame_idx in enumerate(frames_to_save):
+                if frame_idx == -1 and len(original_pixels) > 0:
+                    frame_idx = len(original_pixels) - 1
+                
+                if 0 <= frame_idx < len(original_pixels):
+                    # Save the raw frame without any color conversion
+                    frame_original = original_pixels[frame_idx].astype('uint8')
+                    save_frame_image(
+                        frame_original, 
+                        './mask_images/original', 
+                        f"{dicom_filename.replace('.dcm', '')}_{i}.png"
+                    )
+        
+        # Save color-converted frames (current "before" images)
+        if SAVE_MASK_IMAGES and dicom_filename:
+            # Save first, middle, and last frames of original video with YUV to BGR conversion
             frames_to_save = [0, len(original_pixels)//2, -1]
             for i, frame_idx in enumerate(frames_to_save):
                 if frame_idx == -1 and len(original_pixels) > 0:
@@ -275,6 +292,7 @@ def clear_mask_images_directory():
     if SAVE_MASK_IMAGES:
         # Create or clear the mask_images directory and its subdirectories
         mask_dir = './mask_images'
+        original_dir = os.path.join(mask_dir, 'original')
         before_dir = os.path.join(mask_dir, 'before')
         after_dir = os.path.join(mask_dir, 'after')
         
@@ -283,6 +301,7 @@ def clear_mask_images_directory():
             shutil.rmtree(mask_dir)
         
         # Create fresh directories
+        os.makedirs(original_dir, exist_ok=True)
         os.makedirs(before_dir, exist_ok=True)
         os.makedirs(after_dir, exist_ok=True)
         
