@@ -6,10 +6,13 @@ from tqdm import tqdm
 import cv2
 import pydicom
 import mlflow
+import os
+import shutil
 from torchvision.models.video import r2plus1d_18
 
-# Flag to enable/disable MLflow tracking
+# Flags for configuration
 USE_MLFLOW = True  # Set to False to disable MLflow tracking
+SAVE_MASK_IMAGES = True  # Set to False to disable saving before/after masking images
 
 # Set up MLflow tracking if enabled
 if USE_MLFLOW:
@@ -19,7 +22,7 @@ if USE_MLFLOW:
 device = torch.device("cpu")
 video_classification_model = r2plus1d_18(num_classes=1)
 
-data_path = './model_data/example_study'
+data_path = './model_data/example_study2'
 model_weights = "./video_quality_model.pt"
 weights = torch.load(model_weights, map_location=torch.device('cpu'))
 video_classification_model.load_state_dict(weights)
@@ -49,12 +52,29 @@ def crop_and_scale(img, res=(112, 112), interpolation=cv2.INTER_CUBIC, zoom=0.1)
     return img
 
 
-def mask_outside_ultrasound(original_pixels: np.array) -> np.array:
+def save_frame_image(frame, directory, filename):
+    """
+    Save a video frame as an image file.
+    
+    Args:
+        frame (np.ndarray): The frame to save
+        directory (str): Directory to save the image in
+        filename (str): Filename for the image
+    """
+    # Ensure the directory exists
+    os.makedirs(directory, exist_ok=True)
+    
+    # Save the image
+    cv2.imwrite(os.path.join(directory, filename), frame)
+
+
+def mask_outside_ultrasound(original_pixels: np.array, dicom_filename=None) -> np.array:
     """
     Masks all pixels outside the ultrasound region in a video.
 
     Args:
     vid (np.ndarray): A numpy array representing the video frames. FxHxWxC
+    dicom_filename (str, optional): Filename of the DICOM file for saving images
 
     Returns:
     np.ndarray: A numpy array with pixels outside the ultrasound region masked.
@@ -62,6 +82,23 @@ def mask_outside_ultrasound(original_pixels: np.array) -> np.array:
     try:
         test_array=np.copy(original_pixels)
         vid=np.copy(original_pixels)
+        
+        # Save original frames if enabled
+        if SAVE_MASK_IMAGES and dicom_filename:
+            # Save first, middle, and last frames of original video
+            frames_to_save = [0, len(original_pixels)//2, -1]
+            for i, frame_idx in enumerate(frames_to_save):
+                if frame_idx == -1 and len(original_pixels) > 0:
+                    frame_idx = len(original_pixels) - 1
+                
+                if 0 <= frame_idx < len(original_pixels):
+                    frame = original_pixels[frame_idx].astype('uint8')
+                    frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
+                    save_frame_image(
+                        frame, 
+                        './mask_images/before', 
+                        f"{dicom_filename.replace('.dcm', '')}_{i}.png"
+                    )
         ##################### CREATE MASK #####################
         # Sum all the frames
         frame_sum = test_array[0].astype(np.float32)  # Start off the frameSum with the first frame
@@ -130,6 +167,23 @@ def mask_outside_ultrasound(original_pixels: np.array) -> np.array:
             frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
             frame = cv2.bitwise_and(frame, frame, mask = frame_overlap.astype(np.uint8))
             vid[i,:,:,:]=frame
+        
+        # Save masked frames if enabled
+        if SAVE_MASK_IMAGES and dicom_filename:
+            # Save first, middle, and last frames of masked video
+            frames_to_save = [0, len(vid)//2, -1]
+            for i, frame_idx in enumerate(frames_to_save):
+                if frame_idx == -1 and len(vid) > 0:
+                    frame_idx = len(vid) - 1
+                
+                if 0 <= frame_idx < len(vid):
+                    frame = vid[frame_idx].astype('uint8')
+                    save_frame_image(
+                        frame, 
+                        './mask_images/after', 
+                        f"{dicom_filename.replace('.dcm', '')}_{i}.png"
+                    )
+        
         return vid
     except Exception as e:
         print("Error masking returned as is.")
@@ -161,7 +215,8 @@ def process_dicoms(INPUT):
             if pixels.ndim == 3:
                 pixels = np.repeat(pixels[..., None], 3, axis=3)
             # mask everything outside ultrasound region
-            pixels = mask_outside_ultrasound(dcm.pixel_array)
+            filename = os.path.basename(dicom_path)
+            pixels = mask_outside_ultrasound(dcm.pixel_array, filename)
             # model specific preprocessing
             x = np.zeros((len(pixels), 112, 112, 3))
             for i in range(len(x)):
@@ -212,7 +267,32 @@ def get_quality_issues(probability):
     else:
         return "Critical issues - may include artifacts, improper view, or technical errors"
 
+def clear_mask_images_directory():
+    """
+    Clear the mask_images directory to ensure fresh images for each run.
+    Creates the directory structure if it doesn't exist.
+    """
+    if SAVE_MASK_IMAGES:
+        # Create or clear the mask_images directory and its subdirectories
+        mask_dir = './mask_images'
+        before_dir = os.path.join(mask_dir, 'before')
+        after_dir = os.path.join(mask_dir, 'after')
+        
+        # Remove existing directories if they exist
+        if os.path.exists(mask_dir):
+            shutil.rmtree(mask_dir)
+        
+        # Create fresh directories
+        os.makedirs(before_dir, exist_ok=True)
+        os.makedirs(after_dir, exist_ok=True)
+        
+        print(f"Cleared and created mask image directories at {mask_dir}")
+
+
 if __name__ == "__main__":
+    # Clear mask images directory if saving is enabled
+    clear_mask_images_directory()
+    
     # Process with or without MLflow based on the flag
     if USE_MLFLOW:
         # Start an MLflow run for tracking

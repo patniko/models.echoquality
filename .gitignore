@@ -1,3 +1,4 @@
 .DS_Store
 model_data/
 quality_results.json
+mask_images/
